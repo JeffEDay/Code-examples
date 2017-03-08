@@ -1,0 +1,396 @@
+---
+title: "Time Series Analysis"
+author: "Jeffrey Day"
+date: "March 1, 2017"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+opts_chunk$set(echo = TRUE)
+```
+
+## Understanding The Components of a Time Series
+
+This document discusses the components of a time series, the use of first order differencing to remove a trend, full Seasonal Decomposition and the potential uses of seasonal adjusted data. In additon, linear regression and ARIMA models are illustrated. 
+
+### Components of Time Series Data
+
+A time series consists of the following components: 
+
+* **Trend** - is the base rate of 
+          increase/decrease 
+          underlying the time series data
+          
+* **Cyclic/Seasonal Effect** - is the variation
+                           above or below the 
+                           base trend that 
+                           repeats cyclically, such
+                           as by season
+
+* **Unexplained** - is the variation from the base trend 
+                that cannot be explained by 
+                the cyclic effect                            
+                           
+
+We wll use public available data from the Steam API.  Specifically we will use the monthly average number of players for Counter-Strike from January 2013 thru January 2017.  
+
+We will echo the code so it can be used as a reference or with subsequent work.
+
+Begin by loading in the necessary libraries
+
+```{r message=FALSE, warning=FALSE}
+
+library(forecast)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(stats)
+```
+ 
+Read in the data for Counter-Strike, filter to the desired example time series and date range.  
+
+```{r}
+# Use Public data from Steam API
+data <- read.csv("MonthlyPlayers.csv",sep = ",",header = TRUE, 
+                 stringsAsFactors = FALSE)
+
+# Use Counter Strike Average Monthly Player data
+data_CS <- filter(data,data$Game_Steam_ID == 10 & 
+                  data$Month_Year >=2013.000 & 
+                  Month_Year < 2017.083)
+
+# Order the df by time
+data_CS <- data_CS[order(data_CS$X,decreasing=TRUE),]
+
+# Let's see what the time series looks like
+plot(data_CS$Month_Year,data_CS$Average_Player)
+```
+
+A look at the time series clearly shows declining monthly play but also what looks
+like seasonal ups and downs.
+
+We can fit a linear regression line to this data and use time to get 
+a feel for the Trend present in the data.  It also makes it easier to see
+the potential seasonal aspects.
+
+```{r}
+
+reg1 <- lm(data_CS$Average_Players~data_CS$Month_Year)
+summary(reg1)
+par(cex=.8)
+plot(data_CS$Month_Year, data_CS$Average_Players, 
+     main="Counter-Strike (rsq=.67)")
+abline(reg1)
+```
+
+The results are not bad for illustrating the trend and the seasonal aspects look pretty clear with the fit line as a reference. Before we formally break out the components of a time series let's
+first simply remove the trend by using first order differencing.  This is also know as making the time series stationary (at least on the mean if not also variance).
+
+### Making a Time Series Stationary   
+
+Most statistical forecasting methods are based on the assumption that the time series is stationary. A stationary series is relatively easy to predict as you simply predict that its future will be the same as the past. 
+
+Stationarizing a time series through differencing (where needed) is an important part of the process of fitting an ARIMA model. The I in ARIMA is exactly this. Integrated (I) - subtract time series with its lagged series to extract trends from the data and is the d in the ARIMA (p,d,q) 
+
+First let's talk a little about how to make a time series stationary, i.e., remove the trend. Most time series can be made stationary by using differencing.  
+
+First order differences usually do the trick, and nearly all time series can be made stationary
+with no more than a second order difference.  Differencing may also help reveal seasonality.
+
+Formally the equation is as follows: 
+
+1st Differencing (d=1)	 $Y_t'$t=$Y_t$ - $Y_t-1$ 
+
+Doing first order differences can be useful when the time series lacks a full 4 cycles an a full decomposition is not possible.  
+
+Let's do a first order differencing to remove the
+Trend in our data so we can see the rise and fall better by time.
+But first let's create a right proper time series object for R.
+
+```{r}
+# Ceate Time Series of four years
+data1 <- ts(data_CS$Average_Players, start = c(2013,1),  
+            frequency = 12)
+```
+
+Using the diff function with plot we can see the time series with the trend removed.
+
+Basically the plot of the series *should* show a sideways line with no overall up or down movement over time.
+
+```{r}
+plot(diff(data1),ylab="Differenced Monthly Players")
+```
+
+
+Yikes, initial launch really screws this up, but
+repeating pattern can be still be seen and the trend is no longer present 
+(later we shall see that ARIMA confirms d=1 is the correct difference).  Also, you can see how future prediction would be realtively easy given a few pieces of information. In this example the dips and dives appear to be seasonal but other series may show non-seasonal spikes (like we see with launch date here) around things like promotions, new content releases, or industry events. 
+This differencing can make it easier to see. Furthermore, the trend can obscure the influence of these other variables due to changing means and variance due to increase/decrease in the dependent variable. 
+
+First order differencing can be useful (but not conclusive) when assessing
+the impact of a marketing program as over and above trend if the peak is greater than the prior same period over period time.  If the peak or valley is appreciable different than the prior same time period, then something may be going on. If not, likely
+no out of normal impact. 
+
+### Decompose A Time Series
+
+In order to fully decompose the series, We will use the stl function from the `stats` package to formally decompose the time series into **Trend**, **Seasonal**, and **Unexplained** (residual) components.
+
+The stl function assumes an "Additive" model as opposed to a "Multiplicative" model.
+
+For additive models there is an implicit assumption that the different components affected the time series additively. For monthly data, an additive model assumes that the difference between the January and July values is approximately the same each year. In other words, the amplitude of the seasonal effect is the same each year. The model similarly assumes that the residuals are roughly the same size throughout the series -- they are a random component that adds on to the other components in the same way at all parts of the series.
+
+In many time series involving quantities (e.g. money, wheat production, ...), the absolute differences in the values are of less interest and importance than the percentage changes.
+For example, in seasonal data, it might be more useful to model that the July value is the same proportion higher than the January value in each year, rather than assuming that their difference is constant. Assuming that the seasonal and other effects act proportionally on the series is equivalent to a multiplicative model.
+
+In my experience, a Multiplicative Model can be applied to a time seris that is additive and all is well.  But the converse is not true. 
+
+Fortunately, multiplicative models are equally easy to fit to data as additive models! The trick to fitting a multiplicative model is to take logarithms of both sides of the model. 
+ 
+
+```{r}
+series_parts <- stl(data1, s.window="periodic")       
+# Let's plot the components
+plot(series_parts,main="Additive Seasonal Decomposition")
+
+
+```
+
+On the plot, the top panel labeled **data** is Trend + Seasonal + Residual, i.e.,
+the **actual data** 
+
+A quick look at the numbers may illustrative for some.
+
+```{r}
+# Let's see the numbers
+series_parts 
+
+```
+
+We can run a multiplicative decomposition and get seasonal factors.  Here we use the `decompose`
+package.  
+
+```{r}
+test1<-decompose(data1, type = "multiplicative",filter=NULL)
+# Let's see that seasonal factors
+test1$figure
+
+
+
+# Place the seasonal factor back into the analysis df
+
+data_CS$SFM <- test1$seasonal
+```
+
+The seasonal number (or factor) could be used to adjust or remove
+seasonality from KPI numbers, if a true sense of progress or
+lack thereof is desired as seasonality might otherwise obscure the real assesment.
+
+In addition, if we are doing forecasting and INFERENCE is desired
+we could use the decomp information in more intuitive statistical models
+to help us understand the relationship to the outcome variable.
+
+In fact, let's do that right here and now as an illustration. 
+
+
+```{r}
+# Attach the Seasonal Factor (all rows, 1st column)
+data_CS$SF <- series_parts$time.series[,1]
+# Let's do a linear regression and include the seasonal factor
+# Does a reasonable job along with time with rsq=.89
+
+reg2 <- lm(data_CS$Average_Players~data_CS$Month_Year+data_CS$SF)
+summary(reg2)
+reg2.predictions<-predict(reg2,newdata=data_CS)
+reg2_error <- sqrt((sum((data_CS$Average_Players-reg2.predictions)^2))/nrow(data_CS))
+reg2_error
+```
+
+
+```{r}
+# Plot the results
+fitted.values = data.frame(reg2$fitted.values)
+original.values = data.frame(data_CS$Average_Players)
+graph <- data.frame(fitted.values, original.values)
+graph$date = data_CS$Month_Year
+ggplot(data=graph)+ 
+  geom_line(aes(y=graph$reg2.fitted.values, colour="Fit",x = graph$date)) +
+  geom_line(aes(y=graph$data_CS.Average_Players, colour="Actual" ,
+                x = graph$date)) +
+  scale_colour_manual("",
+                        breaks = c("Actual","Fit"),
+                        values = c("blue","red")) +
+   ggtitle("CS Time+Seasonality, rsq=.89")
+
+```
+
+Let's see what the multiplicative decomp gives us.
+
+```{r}
+regM <- lm(data_CS$Average_Players~data_CS$Month_Year+data_CS$SFM)
+summary(regM)
+regM.predictions<-predict(regM,newdata=data_CS)
+regM_error <- sqrt((sum((data_CS$Average_Players-regM.predictions)^2))/nrow(data_CS))
+regM_error
+```
+
+```{r}
+# Plot the results
+fitted.values = data.frame(regM$fitted.values)
+original.values = data.frame(data_CS$Average_Players)
+graph <- data.frame(fitted.values, original.values)
+graph$date = data_CS$Month_Year
+ggplot(data=graph)+ 
+  geom_line(aes(y=graph$regM.fitted.values, colour="Fit",x = graph$date)) +
+  geom_line(aes(y=graph$data_CS.Average_Players, colour="Actual" ,
+                x = graph$date)) +
+  scale_colour_manual("",
+                        breaks = c("Actual","Fit"),
+                        values = c("blue","red")) +
+   ggtitle("CS Time+Seasonality, rsq=.89")
+```
+
+
+
+
+Both yield similiar if not exactly the same result. Now let's see if we include launch date along with time and seasonal factor and see what that does to our model. 
+
+```{r}
+data_CS$Launch <-ifelse(data_CS$statMonth=="Jan" & data_CS$statYear == 2013, 1, 0)
+reg3 <- lm(data_CS$Average_Players~data_CS$Month_Year+data_CS$SF+data_CS$Launch)
+summary(reg3)
+
+reg3.predictions<-predict(reg3,newdata=data_CS)
+reg3_error <- sqrt((sum((data_CS$Average_Players-reg3.predictions)^2))/nrow(data_CS))
+reg3_error
+
+fitted.values = data.frame(reg3$fitted.values)
+original.values = data.frame(data_CS$Average_Players)
+graph <- data.frame(fitted.values, original.values)
+graph$date = data_CS$Month_Year
+ggplot(data=graph)+ 
+  geom_line(aes(y=graph$reg3.fitted.values, colour="Fit",x = graph$date)) +
+  geom_line(aes(y=graph$data_CS.Average_Players, colour="Actual" ,
+                x = graph$date)) +
+  scale_colour_manual("",
+                        breaks = c("Actual","Fit"),
+                        values = c("blue","red")) +
+  ggtitle("CS Time+Seasonal Factor+Launch, rsq=.96")
+```
+
+Our RMSE has dropped to 875 - Not bad at all. But we see that our fit starts to degrade as we progress through time, especially at the end.  This may be due to the trend goofing up the correlations with things as the trend decreases.  This is the reason extrapolating a regression model to a time series with a trend is potentially problematic as the future rolls onward.  If INFERENCE is a key reason for the development of a model, then this may be okay.  If not, ARIMA likely is a better choice to model the data.
+
+But let's see if ARIMA can beat this.
+
+### Fit a Seasonal Arima Model
+
+Arima does a lot of the work for us.  It will assess and automatically
+perform the differencing needed (d), this is the I in ARIMA.
+
+Next it will extract the influence of the previous periods' values 
+on the current period (p), this is the AR in ARIMA.
+
+This is done through developing a regression model with the time lagged period values as independent or predictor variables
+
+Lastly, it extracts the influence of the previous period's error terms on the current period's error (q), this is the MA in ARIMA.  Be careful here as it is the moving average of the error terms, not the typical moving average we are all accustom to. 
+
+We will use the auto.arima function from the forecast package. 
+
+```{r}
+arima_fit <- auto.arima(data1)
+summary(arima_fit)
+
+# Caluclate the predicted values
+# Get RMSE to assess (it is shown in summary but just for illustration
+# we do it here as well)
+
+arima_pred  <- predict(arima_fit)
+arima_pred <-as.data.frame(arima_pred)
+arima_error <- sqrt((sum((arima_fit$residuals)^2)) / nrow(data_CS))
+```
+
+
+
+The best fit ARIMA model (1,1,0) (1,0,0) [12] tells us that
+the trend can be removed with first order (d=1) differencing (I)
+and that an Auto Regression (AR) (p=1) value of 1 is predictive of the current
+value (loosely we can think of this as our time variable equivalent) and no error term averaging (q=0) (MA) was needed.  In addition, the seasonal results (the second set of p,d,q info) say there is a autoregressive (AR=1) seasonal factor at lag 12 [12], i.e, auto regressive with one year ago. Which of course our seasonal decomp showed was true. And tracing our first order differencing through time shows as well.     
+
+
+And it appears we have beaten the regression model above by a little with 
+an RMSE of 781.  And we have not included Launch as a covariate. 
+
+```{r warning=FALSE}
+# Plot the actual versus the predicted as visual
+A_fit <-(data_CS$Average_Players-arima_fit$residuals)
+fitted.values <- data.frame(A_fit)
+original.values = data.frame(data_CS$Average_Players)
+graph <- data.frame(fitted.values, original.values)
+graph$date = data_CS$Month_Year
+ggplot(data=graph)+ 
+  geom_line(aes(y=graph$A_fit, colour="Fit",x = graph$date)) +
+  geom_line(aes(y=graph$data_CS.Average_Players, colour="Actual" ,
+                x = graph$date)) +
+  scale_colour_manual("",
+                        breaks = c("Actual","Fit"),
+                        values = c("blue","red")) + 
+  ggtitle("Counter-Strike Arima Model")
+
+
+```
+
+It seems a little weird as the peaks appear to lag the actual peaks.
+
+Let's include the covariate *Launch* to see if that helps.  
+
+```{r warning=FALSE}
+covariates <- data_CS[c("Launch")]
+arima_fit2 <-auto.arima(data1, xreg=covariates)
+
+summary(arima_fit2)
+# Caluclate the predicted values
+# Get RMSE to assess (it is shown in summary but just for illustration
+# we do it here)
+
+arima_pred  <- predict(arima_fit2,newxreg=covariates,se.fit=FALSE)
+arima_pred <-as.data.frame(arima_pred)
+arima_error <- sqrt((sum((arima_fit2$residuals)^2)) / nrow(data_CS))
+arima_error
+
+# Plot the actual versus the predicted as visual
+A_fit <-(data_CS$Average_Players-arima_fit2$residuals)
+fitted.values <- data.frame(A_fit)
+original.values = data.frame(data_CS$Average_Players)
+graph <- data.frame(fitted.values, original.values)
+graph$date = data_CS$Month_Year
+ggplot(data=graph)+ 
+  geom_line(aes(y=graph$A_fit, colour="Fit",x = graph$date)) +
+  geom_line(aes(y=graph$data_CS.Average_Players, colour="Actual" ,
+                x = graph$date)) +
+  scale_colour_manual("",
+                        breaks = c("Actual","Fit"),
+                        values = c("blue","red")) +
+  ggtitle("CS Arima Model With Launch as a Covariate")
+
+                     
+
+```
+
+That improves the model even more (RMSE=579) and brings the peak prediction back into
+line.  ARIMA seems to be the right weapon here if INFERENCE is not a part 
+of the gig. 
+
+But, this may be a total overfit as with ARIMA,  "The advantage is that, with enough elements regressed and averaged, you can fit an approximation to almost any time series you like, to whatever precision you like. It basically means that you may fit the data magnificently, but the ARIMA fit could still be total nonsense."
+
+As Frankie Valli says: 
+
+>  You're just too good to be true  
+>  I can't take my eyes off you  
+>  You'd be like heaven to touch  
+>  I wanna hold you so much  
+>  At long last love has arrived  
+>  And I thank God I'm alive  
+>  You're just too good to be true  
+>  Can't take my eyes off you  
+
+
